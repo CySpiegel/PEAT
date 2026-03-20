@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from collections import ChainMap
 from collections.abc import Callable
 from operator import attrgetter
@@ -226,6 +225,17 @@ def compare_dicts(d1: dict | None, d2: dict | None, keys: list[str]) -> bool:
     return True
 
 
+def _make_hashable(value: Any) -> Any:
+    """Convert a value to a hashable representation for deduplication."""
+    if isinstance(value, dict):
+        return tuple(sorted((k, _make_hashable(v)) for k, v in value.items()))
+    elif isinstance(value, (list, tuple)):
+        return tuple(_make_hashable(v) for v in value)
+    elif isinstance(value, set):
+        return tuple(sorted(str(v) for v in value))
+    return value
+
+
 def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
     """
     Deduplicates a :class:`list` of :class:`~peat.data.base_model.BaseModel`
@@ -234,9 +244,9 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
     Models that are a subset of another (contains some keys and values)
     will be merged together and their values combined.
 
-    .. warning::
-       This function is expensive to call, ~O(n^2 log n) algorithm (in)efficiency.
-       Do not call more than absolutely needed!
+    Uses hash-based exact duplicate removal (O(n)) followed by key-set
+    grouping for subset detection, avoiding the previous O(n^2) pairwise
+    comparison.
 
     Args:
         current: list of models to deduplicate
@@ -252,97 +262,112 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
     if not isinstance(current[0], BaseModel):
         raise PeatError(f"expected BaseModel for dedupe_model_list, got {type(current[0])}")
 
-    # NOTE (cegoes, 02/21/2023)
-    #
-    # There is a lot going on here. This was originally an atrocious O(n^3) function
-    # (actually,it was close to O(n^4) before my first set of optimizations).
-    #
-    # The main hotspots are:
-    #   - Nested for loops mean all operations are done twice, O(n^2)
-    #   - Dict comparisons (==, <) will compare every key and value in the dict, O(n)
-    #   - Pydantic model comparison is very slow, since it converts
-    #           to a dict under the hood every time (yeah...so like O(n) or O(n log n))
-    #   - Function calls are expensive in Python, and that just adds to the cost of
-    #     each iteration of n.
-    #
-    # Solutions:
-    # - Convert all models to dicts at the start. This avoids the issues with Pydantic
-    #   converting on every comparison. Additionally, this caches the id() of the
-    #   model. The id is used to check if the model is a duplicate, since it's an
-    #   int and can be stored in a set, which has O(1) lookups.
-    #
-    # - Two sets of dicts for the two loops. When a duplicate is found, or a merge occurs,
-    #   then the duplicated/merged item is removed from the dict for the inner loop. This
-    #   changes O(n^2) to O(n log n), since the inner loop shrinks as the algorithm progresses.
-    #   In the case all items are duplicates, then this is close to O(n), while the case where
-    #   all items are unique it's closer to O(n^2), but it's a good tradeoff, since we usually
-    #   sit somewhere in the middle in PEAT.
-    #
-    #   When items are merged, the inner dict it updated with the new value, so it can be used
-    #   for future comparisons. merge_models() is also called, which handles updating the actual
-    #   underlying model in-place, which updates the ultimate result of this function (yay for
-    #   classes and pass by reference).
-    #
-    # - For the subset comparison, use '<' to compare the dict items. dict.items() is a
-    #   memoryview object, so it's as fast as we're going to get for the inherrantly slow
-    #   operation of comparing every key and value between two dicts. '<=' is not needed
-    #   since '==' is already done before entering the subset comparison section of the
-    #   code, which is a minor but notable optimization (~15-20% faster).
-
-    # hack to prevent recursive imports (data_utils.py/models.py)
     model_type = current[0].__repr_name__()  # type: str
+    original_len = len(current)
 
-    duplicates = set()  # type: set[int]
-    model_cache = {id(m): m for m in current}  # type: dict[int, BaseModel]
-    outer_dicts = {id(m): m.dict(exclude_defaults=True, exclude_none=True) for m in current}  # type: dict[int, dict]
-    inner_dicts = copy.deepcopy(outer_dicts)  # type: dict[int, dict]
+    # Phase 1: Convert models to dicts once and remove exact duplicates via hashing.
+    # This is O(n) and handles the most common case.
+    seen_hashes = {}  # type: dict[tuple, int]
+    unique = []  # type: list[tuple[BaseModel, dict]]
 
-    for item_id, item_dict in outer_dicts.items():
-        if item_id in duplicates:
-            continue  # outer loop
+    for m in current:
+        d = m.dict(exclude_defaults=True, exclude_none=True)
+        h = _make_hashable(d)
+        if h not in seen_hashes:
+            seen_hashes[h] = len(unique)
+            unique.append((m, d))
 
-        for comp_id, comp_dict in inner_dicts.items():
-            # Skip if it's in the excluded set or it's the same item
-            if comp_id in duplicates or comp_id == item_id:
-                continue  # inner loop
+    # Phase 2: Subset merging.
+    # Group items by their key-set (frozenset of dict keys). Subset relationships
+    # can only exist between items whose key-sets have a strict subset relationship,
+    # so we only compare across groups where one key-set is a subset of another.
+    merged = set()  # type: set[int]
 
-            # If they're equal, it's a duplicate
-            elif item_dict == comp_dict:
-                duplicates.add(item_id)  # add to set of duplicates
-                del inner_dicts[item_id]  # remove from future comparisons
-                break  # inner loop
+    # Group by key-set
+    keyset_groups = {}  # type: dict[frozenset, list[int]]
+    for i, (_, d) in enumerate(unique):
+        ks = frozenset(d.keys())
+        keyset_groups.setdefault(ks, []).append(i)
 
-            # If dict key sets are disjoint, then merge them
-            # If it's a Service, and "status" is "open", preserve that value
-            # Using subset with "dict.items()": https://stackoverflow.com/a/41579450
-            elif (item_dict.items() < comp_dict.items()) or (
-                model_type == "Service"
-                and (
+    # Sort key-sets by size (ascending) so smaller sets are checked as
+    # potential subsets of larger sets
+    keysets = sorted(keyset_groups.keys(), key=len)
+
+    for ki, small_ks in enumerate(keysets):
+        for kj in range(ki + 1, len(keysets)):
+            large_ks = keysets[kj]
+            if not small_ks < large_ks:
+                continue
+
+            # small_ks is a strict subset of large_ks.
+            # Check each item in the small group against items in the large group.
+            for si in keyset_groups[small_ks]:
+                if si in merged:
+                    continue
+                _, small_dict = unique[si]
+
+                for li in keyset_groups[large_ks]:
+                    if li in merged:
+                        continue
+                    large_model, large_dict = unique[li]
+
+                    # All of the smaller dict's key-value pairs must exist in the larger
+                    if all(large_dict.get(k) == v for k, v in small_dict.items()):
+                        merge_models(large_model, unique[si][0])
+                        # Update cached dict after merge
+                        new_dict = large_model.dict(
+                            exclude_defaults=True, exclude_none=True
+                        )
+                        unique[li] = (large_model, new_dict)
+                        merged.add(si)
+                        break
+
+    # Service model special case: status-based merging that doesn't follow
+    # normal subset rules. Index by (port, protocol) for efficient lookup.
+    if model_type == "Service":
+        # Build index of items by (port, protocol) for fast candidate lookup
+        port_proto_index = {}  # type: dict[tuple, list[int]]
+        for i, (_, d) in enumerate(unique):
+            if i in merged:
+                continue
+            key = (d.get("port"), d.get("protocol"))
+            port_proto_index.setdefault(key, []).append(i)
+
+        for i, (item_model, item_dict) in enumerate(unique):
+            if i in merged:
+                continue
+
+            key = (item_dict.get("port"), item_dict.get("protocol"))
+            candidates = port_proto_index.get(key, [])
+
+            for j in candidates:
+                if j == i or j in merged:
+                    continue
+                comp_model, comp_dict = unique[j]
+
+                if (
                     comp_dict.get("status") == "verified"
-                    or (comp_dict.get("status") == "open" and item_dict.get("status") == "closed")
-                )
-                and compare_dicts(item_dict, comp_dict, ["port", "protocol"])
-            ):
-                # Update the underlying model which will be in the results
-                merge_models(model_cache[comp_id], model_cache[item_id])
+                    or (
+                        comp_dict.get("status") == "open"
+                        and item_dict.get("status") == "closed"
+                    )
+                ) and compare_dicts(item_dict, comp_dict, ["port", "protocol"]):
+                    merge_models(comp_model, item_model)
+                    new_dict = comp_model.dict(
+                        exclude_defaults=True, exclude_none=True
+                    )
+                    unique[j] = (comp_model, new_dict)
+                    merged.add(i)
+                    break
 
-                # Update the cached dict value to use for remaining comparisons
-                inner_dicts[comp_id] = model_cache[comp_id].dict(
-                    exclude_defaults=True, exclude_none=True
-                )
+    deduped = [
+        model for i, (model, _) in enumerate(unique) if i not in merged
+    ]  # type: list[BaseModel]
 
-                # Model was merged, so remove it from future checks
-                duplicates.add(item_id)  # add to set of duplicates
-                del inner_dicts[item_id]  # remove from future comparisons
-                break  # inner loop
-
-    # Create a de-duplicated list of objects
-    # by excluding those that were marked as duplicate
-    deduped = [model for model_id, model in model_cache.items() if model_id not in duplicates]  # type: list[BaseModel]
-
-    if duplicates and config.DEBUG:
+    removed = original_len - len(deduped)
+    if removed and config.DEBUG:
         log.trace(
-            f"Removed {len(duplicates)} duplicates from list of {len(current)} "
+            f"Removed {removed} duplicates from list of {original_len} "
             f"{model_type} items ({len(deduped)} items remaining in list)"
         )
 
@@ -484,9 +509,10 @@ def merge_models(dest: BaseModel, source: BaseModel) -> None:
         elif isinstance(current_value, list):
             if current_value and new_value:
                 if isinstance(current_value[0], BaseModel):
-                    current_value.extend(new_value)
-                    dedupe_model_list(current_value)
-                    sort_model_list(current_value)
+                    combined = current_value + list(new_value)
+                    deduped = dedupe_model_list(combined)
+                    sort_model_list(deduped)
+                    setattr(dest, attr, deduped)
                 else:
                     for new_item in new_value:
                         if not any(new_item == c for c in current_value):
