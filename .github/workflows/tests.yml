@@ -53,6 +53,33 @@ jobs:
           pdm run lint
           pdm run check-sdist --inject-junk
 
+  type-check:
+    name: Type Checking
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            files.pythonhosted.org:443
+            github.com:443
+            pdm-project.org:443
+            pdm.fming.dev:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Setup PDM
+        uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.12"
+          cache: true
+      - name: Install dependencies
+        run: pdm sync -G lint
+      - name: Run Mypy Type Checking
+        run: pdm run typecheck
+
   unit-tests:
     name: Unit Tests
     runs-on: ${{ matrix.platform }}
@@ -83,6 +110,57 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: test-results-python${{ matrix.python-version }}-${{ matrix.platform }}
+          path: |
+            htmlcov/
+            pytest_files/
+          if-no-files-found: error
+
+  integration-tests:
+    name: Integration Tests (Elasticsearch)
+    runs-on: ubuntu-24.04
+    services:
+      elasticsearch:
+        image: elasticsearch:8.12.1
+        ports:
+          - 9200:9200
+        env:
+          node.name: peat-test
+          cluster.name: peat-test-cluster
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+        options: >-
+          --health-cmd "curl -f http://localhost:9200 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+          --health-start-period 30s
+    env:
+      ES_URL: "http://localhost:9200"
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Setup PDM
+        uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.12"
+          cache: true
+      - name: Install dependencies
+        run: pdm sync -G test
+      - name: Verify Elasticsearch is running
+        run: curl -f http://localhost:9200
+      - name: Run Integration Tests
+        run: |
+          pdm run pytest --basetemp=./pytest_files --run-slow --run-ci --durations=10 --cov-report term-missing:skip-covered --cov-report html --cov=peat --no-cov-on-fail --xdoctest -n 4 ./tests ./peat
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: integration-test-results
           path: |
             htmlcov/
             pytest_files/
