@@ -315,9 +315,7 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
                     if all(large_dict.get(k) == v for k, v in small_dict.items()):
                         merge_models(large_model, unique[si][0])
                         # Update cached dict after merge
-                        new_dict = large_model.dict(
-                            exclude_defaults=True, exclude_none=True
-                        )
+                        new_dict = large_model.dict(exclude_defaults=True, exclude_none=True)
                         unique[li] = (large_model, new_dict)
                         merged.add(si)
                         break
@@ -347,22 +345,15 @@ def dedupe_model_list(current: list[BaseModel]) -> list[BaseModel]:
 
                 if (
                     comp_dict.get("status") == "verified"
-                    or (
-                        comp_dict.get("status") == "open"
-                        and item_dict.get("status") == "closed"
-                    )
+                    or (comp_dict.get("status") == "open" and item_dict.get("status") == "closed")
                 ) and compare_dicts(item_dict, comp_dict, ["port", "protocol"]):
                     merge_models(comp_model, item_model)
-                    new_dict = comp_model.dict(
-                        exclude_defaults=True, exclude_none=True
-                    )
+                    new_dict = comp_model.dict(exclude_defaults=True, exclude_none=True)
                     unique[j] = (comp_model, new_dict)
                     merged.add(i)
                     break
 
-    deduped = [
-        model for i, (model, _) in enumerate(unique) if i not in merged
-    ]  # type: list[BaseModel]
+    deduped = [model for i, (model, _) in enumerate(unique) if i not in merged]  # type: list[BaseModel]
 
     removed = original_len - len(deduped)
     if removed and config.DEBUG:
