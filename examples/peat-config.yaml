@@ -671,7 +671,7 @@ device_options:
 
   # SSH protocol
   #
-  # "ssh" is used by the following modules: Sage
+  # "ssh" is used by the following modules: Sage, Fortigate, iDirect
   ssh:
     port: 22
     timeout: 5.0          # Timeout (seconds) before timing out
@@ -680,6 +680,29 @@ device_options:
     passphrase: ""        # Pem key_file passphrase
     key_filename: ""      # Location of pem key (must be openssh)
     look_for_keys: false  # Don't look for ssh keys
+
+    # Jump hosts (ProxyJump) - tunnel through one or more bastion hosts
+    # to reach the target device. Connections are chained in order.
+    # Each entry supports: host, port, user, pass, key_filename
+    # Leave empty for direct connections (default).
+    jump_hosts: []
+    # Example with a single jump host:
+    #   jump_hosts:
+    #     - host: bastion.example.com
+    #       port: 22
+    #       user: admin
+    #       pass: !ENV 'BASTION_PASS'
+    #
+    # Example with multiple hops:
+    #   jump_hosts:
+    #     - host: bastion1.example.com
+    #       port: 22
+    #       user: admin
+    #       pass: !ENV 'BASTION1_PASS'
+    #     - host: bastion2.internal
+    #       port: 2222
+    #       user: operator
+    #       key_filename: /path/to/key.pem
 
   # Hyper-Text Transfer Protocol (HTTP)
   #

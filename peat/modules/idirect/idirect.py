@@ -110,6 +110,7 @@ class Idirect(DeviceModule):
                     timeout=dev.options["ssh"]["timeout"],
                     username=username,
                     password=password,
+                    jump_hosts=dev.options["ssh"].get("jump_hosts", []),
                 )
 
                 if conn.test_connection():

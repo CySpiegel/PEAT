@@ -23,6 +23,7 @@ DEFAULT_OPTIONS: dict[str, dict[str, ConfigVal] | ConfigVal] = {
         "passphrase": "",
         "key_filename": "",
         "look_for_keys": False,
+        "jump_hosts": [],
     },
     "http": {"port": 80, "timeout": config.DEFAULT_TIMEOUT},
     "https": {"port": 443, "timeout": config.DEFAULT_TIMEOUT},

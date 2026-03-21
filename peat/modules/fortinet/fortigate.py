@@ -195,6 +195,7 @@ class Fortigate(DeviceModule):
                     timeout=dev.options["ssh"]["timeout"],
                     username=dev.options["ssh"]["user"],
                     password=dev.options["ssh"]["pass"],
+                    jump_hosts=dev.options["ssh"].get("jump_hosts", []),
                 )
             else:
                 ssh = dev._cache["ssh_session"]
@@ -333,6 +334,7 @@ class Fortigate(DeviceModule):
             timeout=dev.options["ssh"]["timeout"],
             username=dev.options["ssh"]["user"],
             password=dev.options["ssh"]["pass"],
+            jump_hosts=dev.options["ssh"].get("jump_hosts", []),
         )
 
         if ssh.comm:

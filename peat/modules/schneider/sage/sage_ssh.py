@@ -122,6 +122,9 @@ class SageSSH(SSH, SageCommands):
         elif not password and kwargs.get("password"):
             password = kwargs.pop("password")
 
+        # Extract jump_hosts before removing non-paramiko keys
+        jump_hosts = kwargs.pop("jump_hosts", [])
+
         # HACK: remove kwargs arguments that should be set on class
         # Avoids passing duplicate arguments into kwargs in paramiko
         for key in [
@@ -137,7 +140,7 @@ class SageSSH(SSH, SageCommands):
             if key in kwargs:
                 del kwargs[key]
 
-        super().__init__(ip, port, timeout, username, password, kwargs)
+        super().__init__(ip, port, timeout, username, password, kwargs, jump_hosts)
 
         self.dev = dev  # type: Optional[DeviceData]
         self.resp_dir = None  # type: Optional[Path]

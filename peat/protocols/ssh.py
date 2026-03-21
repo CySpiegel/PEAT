@@ -4,6 +4,10 @@ This module handles SSH connections for PEAT modules.
 This module provides connection handling, command writing/reading, and all parsing and logging.
 This module should be inherited by all additional modules that use SSH connections.
 
+Supports multi-hop SSH tunneling via jump hosts (ProxyJump). Configure jump hosts
+in the YAML config under ``ssh.jump_hosts`` to tunnel through one or more
+bastion/jump servers before reaching the target device.
+
 Authors
 
 - Kevin Cox
@@ -27,6 +31,11 @@ class SSH:
 
     This is a wrapper around Python's :mod:`paramiko` module.
 
+    Supports multi-hop SSH tunneling via the ``jump_hosts`` parameter. Each
+    jump host is specified as a dict with keys: ``host``, ``port``, ``user``,
+    ``pass``, ``key_filename`` (all optional except ``host``). Connections are
+    chained in order, with each hop tunneled through the previous one.
+
     Note:
         The SSH class attributes can be overridden by the deriving class, but isn't
         always necessary.
@@ -36,6 +45,7 @@ class SSH:
         port (int, optional): Which port number to use - default is 22.
         timeout (float, optional): Seconds to wait for command before timing out.
         kwargs (dict[str, any], optional): Additional kwargs for Paramiko.
+        jump_hosts (list[dict], optional): List of jump host dicts to tunnel through.
         ENCODING (str, optional): Encoding to use for parsing.
         POST_WRITE_SLEEP (float, optional): How long to sleep after writing out.
         LINE_TERMINATOR (str, optional): Which line terminator to use for input commands.
@@ -53,6 +63,7 @@ class SSH:
     - Logging messages
     - Records all commands and responses and saves to a file
     - Simpler function calls
+    - Multi-hop SSH jump host tunneling
     """
 
     ENCODING: str = "utf-8"
@@ -69,6 +80,7 @@ class SSH:
         username: str | None = None,
         password: str | None = None,
         kwargs: dict[str, Any] | None = None,  # Additional Paramiko input
+        jump_hosts: list[dict[str, Any]] | None = None,
     ) -> None:
         self.ip: str = ip
         self.port: int = port
@@ -89,6 +101,8 @@ class SSH:
             kwargs = {}
 
         self.kwargs = kwargs  # type: dict[str, Any]
+        self.jump_hosts: list[dict[str, Any]] = jump_hosts or []
+        self._jump_transports: list[paramiko.Transport] = []
 
         self._comm: paramiko.SSHClient = paramiko.SSHClient()
         self._channel: paramiko.Channel | None = None
@@ -123,12 +137,108 @@ class SSH:
     def channel(self, obj: paramiko.Channel) -> None:
         self._channel = obj
 
+    def _build_jump_chain(self) -> paramiko.Channel | None:
+        """
+        Build a chain of SSH transports through configured jump hosts.
+
+        Each jump host tunnels through the previous one via ``direct-tcpip``
+        channel forwarding. Supports an arbitrary number of hops.
+
+        Returns:
+            A paramiko Channel connected to the final target, or None if
+            no jump hosts are configured.
+        """
+        if not self.jump_hosts:
+            return None
+
+        hop_labels = " -> ".join(
+            f"{jh.get('host', '?')}:{jh.get('port', 22)}" for jh in self.jump_hosts
+        )
+        self.log.info(
+            f"Establishing SSH tunnel chain: {hop_labels} -> {self.ip}:{self.port}"
+        )
+
+        prev_transport: paramiko.Transport | None = None
+
+        for i, jh in enumerate(self.jump_hosts):
+            jh_host = jh.get("host", "")
+            jh_port = int(jh.get("port", 22))
+            jh_user = jh.get("user", "")
+            jh_pass = jh.get("pass", "")
+            jh_key = jh.get("key_filename", "")
+
+            if not jh_host:
+                raise CommError(f"Jump host #{i + 1} has no 'host' configured")
+
+            # Determine next hop destination for this transport's channel
+            if i + 1 < len(self.jump_hosts):
+                next_host = self.jump_hosts[i + 1].get("host", "")
+                next_port = int(self.jump_hosts[i + 1].get("port", 22))
+            else:
+                next_host = self.ip
+                next_port = self.port
+
+            # First hop connects directly; subsequent hops tunnel through prior transport
+            if prev_transport is None:
+                self.log.debug(f"Jump hop {i + 1}: connecting to {jh_host}:{jh_port}")
+                sock = (jh_host, jh_port)
+            else:
+                self.log.debug(
+                    f"Jump hop {i + 1}: tunneling to {jh_host}:{jh_port} "
+                    f"through previous hop"
+                )
+                sock = prev_transport.open_channel(
+                    "direct-tcpip", (jh_host, jh_port), ("", 0)
+                )
+
+            transport = paramiko.Transport(sock)
+            transport.start_client(timeout=self.timeout)
+
+            # Authenticate this hop
+            jh_pkey = None
+            if jh_key:
+                try:
+                    jh_pkey = paramiko.RSAKey.from_private_key_file(
+                        filename=jh_key, password=jh_pass or None
+                    )
+                except Exception:
+                    # Fall back to trying other key types
+                    try:
+                        jh_pkey = paramiko.Ed25519Key.from_private_key_file(
+                            filename=jh_key, password=jh_pass or None
+                        )
+                    except Exception:
+                        jh_pkey = paramiko.ECDSAKey.from_private_key_file(
+                            filename=jh_key, password=jh_pass or None
+                        )
+
+            if jh_pkey:
+                transport.auth_publickey(jh_user, jh_pkey)
+            elif jh_pass:
+                transport.auth_password(jh_user, jh_pass)
+            else:
+                transport.auth_none(jh_user)
+
+            self._jump_transports.append(transport)
+            self.log.debug(f"Jump hop {i + 1}: authenticated as '{jh_user}'")
+            prev_transport = transport
+
+        # Open a channel from the last jump host to the final target
+        self.log.debug(
+            f"Opening final tunnel to target {self.ip}:{self.port}"
+        )
+        return prev_transport.open_channel(
+            "direct-tcpip", (self.ip, self.port), ("", 0)
+        )
+
     @property
     def comm(self) -> paramiko.SSHClient:
         """
         Initialize SSH communication.
 
-        Python SSH instance used for interacting with the device.
+        If jump hosts are configured, establishes a tunnel chain through
+        each hop before connecting to the target device. Otherwise,
+        connects directly.
 
         Returns:
             paramiko.SSHClient: SSH client used for maintaining connection state.
@@ -153,19 +263,33 @@ class SSH:
                 # TODO: this is dangerous for MITM Attacks. Is there a way around this?
                 self._comm.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
+                # Build tunnel through jump hosts if configured
+                tunnel_sock = self._build_jump_chain()
+
                 self.log.debug(f"Attempting SSH login with user '{self.username}'")
-                self._comm.connect(
-                    hostname=self.ip,
-                    port=self.port,
-                    username=self.username,
-                    password=self.password,
-                    pkey=pkey,
-                    timeout=self.timeout,
+                connect_kwargs = {
+                    "hostname": self.ip,
+                    "port": self.port,
+                    "username": self.username,
+                    "password": self.password,
+                    "pkey": pkey,
+                    "timeout": self.timeout,
                     **kwargs,
-                )
+                }
+
+                if tunnel_sock is not None:
+                    connect_kwargs["sock"] = tunnel_sock
+
+                self._comm.connect(**connect_kwargs)
 
                 self.connected = True
-                self.log.info(f"SSH connected to {self.ip}:{self.port}")
+                if self.jump_hosts:
+                    self.log.info(
+                        f"SSH connected to {self.ip}:{self.port} "
+                        f"via {len(self.jump_hosts)} jump host(s)"
+                    )
+                else:
+                    self.log.info(f"SSH connected to {self.ip}:{self.port}")
             except paramiko.AuthenticationException as ex:
                 self._close()
                 raise paramiko.AuthenticationException(
@@ -253,6 +377,13 @@ class SSH:
 
     def _close(self) -> None:
         self._comm.close()
+        # Tear down jump host transports in reverse order
+        for transport in reversed(self._jump_transports):
+            try:
+                transport.close()
+            except Exception:
+                pass
+        self._jump_transports.clear()
         self.connected = False
         self._channel = None
 

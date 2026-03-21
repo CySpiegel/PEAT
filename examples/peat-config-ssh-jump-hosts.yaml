@@ -1,0 +1,132 @@
+# Example PEAT configuration demonstrating SSH jump host (ProxyJump) tunneling
+#
+# This configuration shows how to reach OT devices that are behind one or
+# more bastion/jump hosts. PEAT will chain SSH connections through each
+# hop before connecting to the target device.
+#
+# Topology example:
+#
+#   PEAT host --> bastion1 (DMZ) --> bastion2 (OT network) --> target device
+#
+# This is common in segmented OT environments where direct access to
+# devices on the control network is not allowed.
+#
+# NOTE: Credentials can use the !ENV tag to pull from environment variables
+# rather than storing them in plaintext.
+#
+# Run as root if raw sockets or serial access is needed:
+#   sudo peat scan -c examples/peat-config-ssh-jump-hosts.yaml -t 10.0.0.0/24
+#
+# -----------------------------------------------------------------------------
+
+metadata:
+  name: "ssh-jump-host-example"
+  description: "PEAT config with SSH jump host tunneling for segmented OT networks"
+  author: ""
+  created: ""
+  updated: ""
+
+debug: 1
+assume_online: false
+max_threads: 50
+
+out_dir: &OUTDIR "./peat_results/"
+run_dir: &RUNDIR !JOIN [*OUTDIR, "jump_host_run/"]
+device_dir: !JOIN [*RUNDIR, "devices/"]
+summaries_dir: !JOIN [*RUNDIR, "summaries/"]
+elastic_dir: !JOIN [*RUNDIR, "elastic_data/"]
+meta_dir: !JOIN [*RUNDIR, "peat_metadata/"]
+log_dir: !JOIN [*RUNDIR, "logs/"]
+temp_dir: !JOIN [*RUNDIR, "temp/"]
+
+device_options:
+
+  # --- Single jump host example ---
+  # All SSH connections will tunnel through this bastion host by default.
+  ssh:
+    port: 22
+    timeout: 10.0
+    user: "device_user"
+    pass: !ENV 'PEAT_DEVICE_SSH_PASS'
+    passphrase: ""
+    key_filename: ""
+    look_for_keys: false
+    jump_hosts:
+      - host: "bastion.example.com"
+        port: 22
+        user: "bastion_admin"
+        pass: !ENV 'BASTION_SSH_PASS'
+
+  # Module-specific settings
+  fortigate:
+    pull_methods:
+      - ssh
+      - https
+    log_pull_timeout: 30.0
+
+  sage:
+    pull_methods:
+      - ssh
+      - https
+
+  idirect:
+    pull_methods:
+      - ssh
+
+hosts:
+  # --- Device with global jump host config (inherited from device_options.ssh) ---
+  - label: "fortigate-fw-01"
+    identifiers:
+      ip: "10.0.1.1"
+    peat_module: "Fortigate"
+
+  # --- Device with per-host multi-hop jump config ---
+  # This overrides the global ssh.jump_hosts for this specific device.
+  - label: "sage-rtu-behind-two-bastions"
+    identifiers:
+      ip: "10.0.2.50"
+    peat_module: "Sage"
+    options:
+      ssh:
+        user: "Admin"
+        pass: "Telvent1!"
+        passphrase: "Telvent1!"
+        key_filename: "/path/to/Admin.ppk"
+        look_for_keys: false
+        disabled_algorithms:
+          pubkeys:
+            - rsa-sha2-512
+            - rsa-sha2-256
+        jump_hosts:
+          - host: "bastion1.corp.example.com"
+            port: 22
+            user: "jump_user1"
+            pass: !ENV 'BASTION1_PASS'
+          - host: "bastion2.ot.example.com"
+            port: 2222
+            user: "jump_user2"
+            key_filename: "/path/to/bastion2_key.pem"
+
+  # --- Device with key-based auth on the jump host ---
+  - label: "idirect-modem-01"
+    identifiers:
+      ip: "10.0.3.10"
+    peat_module: "Idirect"
+    options:
+      ssh:
+        creds:
+          - ["root", "iDirect"]
+        jump_hosts:
+          - host: "satellite-gw.example.com"
+            port: 22
+            user: "ops"
+            key_filename: "/home/ops/.ssh/satellite_key"
+
+  # --- Device with no jump hosts (direct connection) ---
+  - label: "local-plc"
+    identifiers:
+      ip: "192.168.1.100"
+    peat_module: "ControlLogix"
+    options:
+      ssh:
+        jump_hosts: []  # Direct connection, no tunneling

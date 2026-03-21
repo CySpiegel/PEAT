@@ -231,6 +231,7 @@ device_options:
     passphrase: ""
     key_filename: ""
     look_for_keys: false
+    jump_hosts: []
   http:
     port: 80
     timeout: 5.0
