@@ -84,6 +84,66 @@ The ``device_options`` section are settings for modules or protocols that are ap
          - telnet
 
 
+.. _ssh-jump-hosts:
+
+SSH jump host tunneling
+-----------------------
+PEAT supports SSH connections through one or more intermediate "jump hosts" (also known as bastion hosts or proxy chains). This is useful when the target device is not directly reachable from the machine running PEAT, such as when the device sits behind a bastion server or inside a segmented network.
+
+Jump hosts are configured under ``device_options.ssh.jump_hosts`` as an ordered list. Each entry represents one hop in the chain, and PEAT tunnels through them in order to reach the target device.
+
+.. code-block:: yaml
+   :caption: SSH jump host configuration example
+
+   device_options:
+     ssh:
+       user: "deviceuser"
+       pass: "devicepass"
+       jump_hosts:
+         - host: "10.0.0.1"       # First hop (bastion / jump box)
+           port: 22
+           user: "jumpuser"
+           pass: "jumppass"
+           key_filename: ""        # Optional PEM key for this hop
+         - host: "172.16.0.1"     # Second hop (middle network)
+           port: 22
+           user: "admin"
+           pass: "password"
+
+Each hop supports the following fields:
+
+- ``host`` (required): IP address or hostname of the jump host. ``ip`` is also accepted as an alias.
+- ``port``: SSH port (default: ``22``).
+- ``user``: Login username. ``username`` is also accepted.
+- ``pass``: Login password. ``password`` is also accepted.
+- ``key_filename``: Path to a PEM private key file for this hop.
+- ``timeout``: Connection timeout in seconds for this hop (defaults to the global SSH timeout).
+
+Jump hosts can also be set on a per-host basis in the ``hosts`` section:
+
+.. code-block:: yaml
+   :caption: Per-host jump host configuration
+
+   hosts:
+     - label: "Remote Sage RTU"
+       identifiers:
+         ip: 192.168.50.10
+       peat_module: "Sage"
+       options:
+         ssh:
+           user: "sageuser"
+           pass: "sagepass"
+           jump_hosts:
+             - host: "bastion.example.com"
+               user: "admin"
+               pass: "bastionpass"
+
+When no jump hosts are configured (the default), SSH connections are made directly to the target device as usual. The feature is transparent to all existing modules that use SSH -- no module code changes are required.
+
+.. note::
+   Jump host support applies to any module that uses the :class:`~peat.protocols.ssh.SSH` protocol class, including external (3rd-party) modules. The ``jump_hosts`` option is extracted from kwargs before they are passed to Paramiko, so it will not interfere with existing module behavior.
+
+
 The ``hosts`` section is a list of hosts that will be scanned/pulled/interrogated by PEAT. Think of it as a inventory of devices. PEAT will use the information about these those to tune it's scanning parameters. Additionally, this is where per-host configurations are set, notably login credentials, as well as any other settings that need to be set for a particular host.
 
 .. code-block:: yaml

@@ -680,6 +680,22 @@ device_options:
     passphrase: ""        # Pem key_file passphrase
     key_filename: ""      # Location of pem key (must be openssh)
     look_for_keys: false  # Don't look for ssh keys
+    # SSH jump hosts (proxy chain) for tunneling through intermediate machines.
+    # Each entry is an SSH hop with its own credentials. Hops are connected
+    # in order, and the final connection tunnels through all of them to reach
+    # the target device. Example:
+    #
+    # jump_hosts:
+    #   - host: "10.0.0.1"        # First hop (bastion / jump box)
+    #     port: 22
+    #     user: "jumpuser"
+    #     pass: "jumppass"
+    #     key_filename: ""         # Optional PEM key for this hop
+    #   - host: "172.16.0.1"      # Second hop (middle network)
+    #     port: 22
+    #     user: "admin"
+    #     pass: "password"
+    jump_hosts: []
 
   # Hyper-Text Transfer Protocol (HTTP)
   #

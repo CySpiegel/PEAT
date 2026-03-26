@@ -53,6 +53,7 @@ class SSH:
     - Logging messages
     - Records all commands and responses and saves to a file
     - Simpler function calls
+    - SSH jump host tunneling for reaching devices through intermediate hosts
     """
 
     ENCODING: str = "utf-8"
@@ -87,6 +88,10 @@ class SSH:
 
         if kwargs is None:
             kwargs = {}
+
+        # Extract jump_hosts before passing kwargs to paramiko
+        self.jump_hosts: list[dict[str, Any]] = kwargs.pop("jump_hosts", []) or []
+        self._jump_clients: list[paramiko.SSHClient] = []
 
         self.kwargs = kwargs  # type: dict[str, Any]
 
@@ -123,12 +128,105 @@ class SSH:
     def channel(self, obj: paramiko.Channel) -> None:
         self._channel = obj
 
+    @staticmethod
+    def _resolve_pkey(kwargs: dict[str, Any], password: str | None = None) -> paramiko.PKey | None:
+        """Load an RSA private key from kwargs if key_filename or pkey is provided."""
+        pkey = kwargs.pop("key_filename", None)
+        if not pkey:
+            pkey = kwargs.pop("pkey", None)
+        if pkey is not None:
+            pkey = paramiko.RSAKey.from_private_key_file(
+                filename=pkey,
+                password=password,
+            )
+        return pkey
+
+    def _build_jump_chain(self) -> paramiko.Channel | None:
+        """
+        Build an SSH tunnel chain through the configured jump hosts.
+
+        Each jump host opens a direct-tcpip channel to the next hop.
+        The final channel targets ``self.ip:self.port``.
+
+        Returns:
+            A paramiko Channel tunneled through all jump hosts,
+            or None if no jump hosts are configured.
+        """
+        if not self.jump_hosts:
+            return None
+
+        self.log.info(
+            f"Building SSH jump chain through {len(self.jump_hosts)} "
+            f"hop(s) to reach {self.ip}:{self.port}"
+        )
+
+        prev_transport: paramiko.Transport | None = None
+
+        for idx, hop in enumerate(self.jump_hosts):
+            hop = deepcopy(hop)
+            host = hop.pop("host", hop.pop("ip", None))
+            port = int(hop.pop("port", 22))
+            user = hop.pop("user", hop.pop("username", None))
+            passwd = hop.pop("pass", hop.pop("password", None))
+
+            if not host:
+                raise CommError(f"Jump host at index {idx} is missing 'host' (or 'ip')")
+
+            # Load private key for this hop if configured
+            hop_pkey = self._resolve_pkey(hop, passwd)
+
+            hop_timeout = float(hop.pop("timeout", self.timeout))
+            # Remove fields we already extracted so the rest can pass as kwargs
+            hop.pop("passphrase", None)
+
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            connect_kwargs: dict[str, Any] = {
+                "hostname": host,
+                "port": port,
+                "username": user,
+                "password": passwd,
+                "pkey": hop_pkey,
+                "timeout": hop_timeout,
+                **hop,
+            }
+
+            # If we have a previous hop, tunnel through it
+            if prev_transport is not None:
+                tunnel = prev_transport.open_channel(
+                    "direct-tcpip",
+                    dest_addr=(host, port),
+                    src_addr=("127.0.0.1", 0),
+                )
+                connect_kwargs["sock"] = tunnel
+
+            self.log.debug(
+                f"Jump hop {idx + 1}/{len(self.jump_hosts)}: "
+                f"connecting to {host}:{port} as '{user}'"
+            )
+            client.connect(**connect_kwargs)
+            self._jump_clients.append(client)
+
+            prev_transport = client.get_transport()
+            self.log.debug(f"Jump hop {idx + 1} established")
+
+        # Open a channel from the last jump host to the final target
+        self.log.debug(f"Opening tunnel from last jump host to target {self.ip}:{self.port}")
+        tunnel = prev_transport.open_channel(
+            "direct-tcpip",
+            dest_addr=(self.ip, self.port),
+            src_addr=("127.0.0.1", 0),
+        )
+        return tunnel
+
     @property
     def comm(self) -> paramiko.SSHClient:
         """
         Initialize SSH communication.
 
         Python SSH instance used for interacting with the device.
+        If jump hosts are configured, the connection is tunneled through them.
 
         Returns:
             paramiko.SSHClient: SSH client used for maintaining connection state.
@@ -138,20 +236,15 @@ class SSH:
                 # TODO: this is specific to the Sage,
                 # move sage-specific logic into SageSSH.
                 kwargs = deepcopy(self.kwargs)
-                pkey = kwargs.pop("key_filename", None)
-                if not pkey:
-                    pkey = kwargs.pop("pkey", None)
-                if pkey is not None:
-                    pkey = paramiko.RSAKey.from_private_key_file(
-                        filename=pkey,
-                        password=self.password,
-                    )
-                # Commenting out overriding paramiko ciphers.
-                # Leaving as comment in case unintended results occur
-                # paramiko.Transport._preferred_ciphers = ("aes256-cbc", 'ssh-rsa', 'aes256-ctr')
+                pkey = self._resolve_pkey(kwargs, self.password)
 
                 # TODO: this is dangerous for MITM Attacks. Is there a way around this?
                 self._comm.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+                # Build tunnel through jump hosts if configured
+                sock = self._build_jump_chain()
+                if sock is not None:
+                    kwargs["sock"] = sock
 
                 self.log.debug(f"Attempting SSH login with user '{self.username}'")
                 self._comm.connect(
@@ -253,6 +346,13 @@ class SSH:
 
     def _close(self) -> None:
         self._comm.close()
+        # Close jump host connections in reverse order (innermost first)
+        for client in reversed(self._jump_clients):
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._jump_clients.clear()
         self.connected = False
         self._channel = None
 
