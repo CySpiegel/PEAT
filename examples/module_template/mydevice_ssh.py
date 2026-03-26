@@ -1,55 +1,51 @@
 """
-SSH interface for the Vendor DeviceName.
+SSH transport for the Vendor DeviceName.
 
-Handles all SSH-based communication with the device, including
-authentication, command execution, and file transfer via SFTP.
+Implements the transport layer for SSH communication. Device-specific
+commands are inherited from MyDeviceCommands, keeping the command
+interface consistent with the Telnet transport.
 
 Authors
 
 - Your Name
 """
 
-from peat import DeviceData, log
 from peat.protocols import SSH
 
+from .mydevice_commands import MyDeviceCommands
 
-class MyDeviceSSH:
-    """SSH interface for the Vendor DeviceName.
 
-    Wraps the base SSH protocol class with device-specific
-    command sequences and response parsing.
+class MyDeviceSSH(MyDeviceCommands):
+    """SSH transport for the Vendor DeviceName.
+
+    Inherits device commands from MyDeviceCommands and implements
+    the SSH-specific transport (connect, send, disconnect, SFTP).
 
     Example usage:
 
         >>> ssh = MyDeviceSSH("192.168.1.1", port=22, timeout=5.0)
         >>> ssh.connect(username="admin", password="secret")
         True
-        >>> ssh.get_config()
+        >>> ssh.get_config()  # inherited from MyDeviceCommands
         '...'
         >>> ssh.disconnect()
     """
 
     def __init__(self, ip: str, port: int = 22, timeout: float = 5.0) -> None:
-        self.ip = ip
+        super().__init__(ip, timeout)
         self.port = port
-        self.timeout = timeout
-        self.log = log.bind(classname=self.__class__.__name__)
         self._ssh: SSH | None = None
 
     @property
     def connected(self) -> bool:
         return self._ssh is not None and self._ssh.connected
 
+    # ------------------------------------------------------------------
+    # Transport implementation
+    # ------------------------------------------------------------------
+
     def connect(self, username: str, password: str) -> bool:
-        """Establish an SSH connection to the device.
-
-        Args:
-            username: SSH username.
-            password: SSH password.
-
-        Returns:
-            True if the connection was successful.
-        """
+        """Establish an SSH connection to the device."""
         try:
             self._ssh = SSH(self.ip, self.port, self.timeout)
             self._ssh.connect(username=username, password=password)
@@ -66,21 +62,10 @@ class MyDeviceSSH:
             self._ssh.close()
             self._ssh = None
 
-    # ------------------------------------------------------------------
-    # Commands
-    # ------------------------------------------------------------------
-
-    def run_command(self, command: str) -> str:
-        """Execute a command on the device and return the output.
-
-        Args:
-            command: Shell command to execute.
-
-        Returns:
-            Command output as a string, or empty string on failure.
-        """
+    def send_command(self, command: str) -> str:
+        """Send a command over SSH and return the output."""
         if not self.connected:
-            self.log.warning("Cannot run command: not connected")
+            self.log.warning("Cannot send command: not connected")
             return ""
 
         try:
@@ -90,32 +75,8 @@ class MyDeviceSSH:
             self.log.warning(f"Command '{command}' failed on {self.ip}: {err}")
             return ""
 
-    def get_config(self) -> str:
-        """Retrieve the device configuration via SSH.
-
-        TODO: Replace with the actual command(s) for your device.
-
-        Returns:
-            Configuration data as a string.
-        """
-        # TODO: Implement device-specific config retrieval
-        # return self.run_command("show running-config")
-        return ""
-
-    def get_firmware_version(self) -> str:
-        """Retrieve the firmware version via SSH.
-
-        TODO: Replace with the actual command for your device.
-
-        Returns:
-            Firmware version string.
-        """
-        # TODO: Implement device-specific version retrieval
-        # return self.run_command("show version")
-        return ""
-
     # ------------------------------------------------------------------
-    # File transfer
+    # SSH-specific operations (SFTP, etc.)
     # ------------------------------------------------------------------
 
     def download_file(self, remote_path: str, local_path: str) -> bool:
@@ -139,35 +100,6 @@ class MyDeviceSSH:
         except Exception as err:
             self.log.warning(f"Failed to download {remote_path} from {self.ip}: {err}")
             return False
-
-    # ------------------------------------------------------------------
-    # Processing
-    # ------------------------------------------------------------------
-
-    def pull_and_process(self, dev: DeviceData) -> bool:
-        """Pull all data over SSH and process into the data model.
-
-        TODO: Implement the SSH pull workflow for your device.
-
-        Returns:
-            True if at least one operation was successful.
-        """
-        success = False
-
-        # TODO: Implement device-specific SSH pull logic
-        # Example:
-        # config_output = self.get_config()
-        # if config_output:
-        #     dev.write_file(config_output, "running_config.txt")
-        #     # Parse and populate dev fields
-        #     success = True
-        #
-        # version_output = self.get_firmware_version()
-        # if version_output:
-        #     dev.firmware.version = version_output
-        #     success = True
-
-        return success
 
 
 __all__ = ["MyDeviceSSH"]

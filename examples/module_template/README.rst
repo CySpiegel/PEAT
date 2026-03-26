@@ -9,9 +9,11 @@ of concerns. Each file has a single responsibility:
    module_template/
    ├── __init__.py              # Package exports
    ├── mydevice.py              # Main module: attributes, identification, pull/parse orchestration
+   ├── mydevice_commands.py     # Shared CLI commands (used by SSH, Telnet, and Serial)
    ├── mydevice_http.py         # HTTP protocol: auth, endpoints, response processing
-   ├── mydevice_ssh.py          # SSH protocol: connection, commands, file transfer
-   ├── mydevice_telnet.py       # Telnet protocol: connection, commands, prompts
+   ├── mydevice_ssh.py          # SSH transport: implements send_command over SSH
+   ├── mydevice_telnet.py       # Telnet transport: implements send_command over Telnet
+   ├── mydevice_serial.py       # Serial transport: implements send_command over RS-232
    ├── mydevice_parse.py        # Parsing logic: file format parsing, data extraction
    ├── test_template_module.py  # Test scaffolding for all components
    └── README.rst               # This file
@@ -34,13 +36,16 @@ Quick Start
 4. **Fill in TODO placeholders** in each file:
 
    - ``mydevice.py`` -- device type, vendor info, model, options
+   - ``mydevice_commands.py`` -- device CLI commands, shared across transports
    - ``mydevice_http.py`` -- endpoints, auth flow, response processing
-   - ``mydevice_ssh.py`` -- commands, file paths (delete if unused)
-   - ``mydevice_telnet.py`` -- prompts, commands (delete if unused)
+   - ``mydevice_ssh.py`` -- SSH transport (delete if unused)
+   - ``mydevice_telnet.py`` -- Telnet transport (delete if unused)
+   - ``mydevice_serial.py`` -- Serial transport (delete if unused)
    - ``mydevice_parse.py`` -- file format parsing, data extraction
 
 5. **Delete unused protocol files.** If the device only uses HTTP,
-   remove ``mydevice_ssh.py`` and ``mydevice_telnet.py``.
+   remove ``mydevice_commands.py``, ``mydevice_ssh.py``,
+   ``mydevice_telnet.py``, and ``mydevice_serial.py``.
 
 6. **Register the module** (built-in modules only):
 
@@ -57,18 +62,31 @@ File Responsibilities
    identification methods (``_verify_*``), and orchestrates pull/parse by
    delegating to protocol helpers. Should contain minimal logic itself.
 
+``mydevice_commands.py`` (shared command interface)
+   Abstract base class defining all device-specific CLI commands
+   (``get_config``, ``get_version``, ``elevate``, etc.) in a
+   transport-agnostic way. SSH, Telnet, and Serial subclasses inherit
+   these commands and only implement ``send_command``, ``connect``,
+   and ``disconnect``. This follows the same pattern as ``SELAscii``
+   in ``peat/modules/sel/``.
+
 ``mydevice_http.py`` (HTTP protocol)
    Subclasses ``peat.protocols.HTTP`` with device-specific authentication,
    API endpoint definitions, and response processing methods. Each
    ``process_*`` method maps a JSON/HTML response to the ``DeviceData`` model.
 
-``mydevice_ssh.py`` (SSH protocol)
-   Wraps ``peat.protocols.SSH`` with device-specific command sequences,
-   prompt handling, and SFTP file transfer operations.
+``mydevice_ssh.py`` (SSH transport)
+   Inherits from ``MyDeviceCommands`` and implements the SSH transport
+   layer using ``peat.protocols.SSH``. Also provides SSH-specific
+   operations like SFTP file transfer.
 
-``mydevice_telnet.py`` (Telnet protocol)
-   Wraps ``peat.protocols.Telnet`` with device-specific login sequences,
-   prompt patterns, and command/response handling.
+``mydevice_telnet.py`` (Telnet transport)
+   Inherits from ``MyDeviceCommands`` and implements the Telnet transport
+   layer using ``peat.protocols.Telnet``.
+
+``mydevice_serial.py`` (Serial transport)
+   Inherits from ``MyDeviceCommands`` and implements the RS-232 serial
+   transport layer using PySerial.
 
 ``mydevice_parse.py`` (parsing)
    Standalone functions for parsing device-specific file formats (JSON,

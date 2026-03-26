@@ -26,6 +26,7 @@ from .mydevice_parse import parse_config
 # Uncomment as needed:
 # from .mydevice_ssh import MyDeviceSSH
 # from .mydevice_telnet import MyDeviceTelnet
+# from .mydevice_serial import MyDeviceSerial
 
 
 class MyDevice(DeviceModule):
@@ -144,6 +145,10 @@ class MyDevice(DeviceModule):
         #     if cls._pull_telnet(dev):
         #         success = True
 
+        # if "serial" in pull_methods:
+        #     if cls._pull_serial(dev):
+        #         success = True
+
         return success
 
     @classmethod
@@ -187,6 +192,13 @@ class MyDevice(DeviceModule):
     #     """Pull device data over Telnet using the MyDeviceTelnet helper."""
     #     cls.log.info(f"Pulling Telnet from {dev.ip}")
     #     # TODO: Implement Telnet pull logic
+    #     return False
+
+    # @classmethod
+    # def _pull_serial(cls, dev: DeviceData) -> bool:
+    #     """Pull device data over serial using the MyDeviceSerial helper."""
+    #     cls.log.info(f"Pulling serial from {dev.serial_port}")
+    #     # TODO: Implement serial pull logic
     #     return False
 
     # ------------------------------------------------------------------
