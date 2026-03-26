@@ -12,9 +12,10 @@ Authors
 
 from collections.abc import Callable
 
-from peat import DeviceData, config, log, utils
-from peat.data import Interface, Service
+from peat import DeviceData, config
 from peat.protocols import HTTP
+
+from .mydevice_parse import parse_interfaces, parse_services, parse_users
 
 
 class MyDeviceHTTP(HTTP):
@@ -27,8 +28,10 @@ class MyDeviceHTTP(HTTP):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        # TODO: Define the HTTP endpoints and their processing methods.
+        # Define the HTTP endpoints and their processing methods.
         # Each entry maps a label to a page URL and a processing function.
+        # get_and_process_all() iterates through these, fetches each page,
+        # and calls the process method to populate the DeviceData model.
         self.methods: dict[str, dict[str, str | Callable]] = {
             "device_info": {
                 "page": "api/device/info",
@@ -38,10 +41,22 @@ class MyDeviceHTTP(HTTP):
                 "page": "api/network/config",
                 "process_method": self.process_network_config,
             },
+            "services": {
+                "page": "api/services",
+                "process_method": self.process_services,
+            },
+            "users": {
+                "page": "api/users",
+                "process_method": self.process_users,
+            },
             # TODO: Add more endpoints as needed
             # "firmware": {
             #     "page": "api/firmware/version",
             #     "process_method": self.process_firmware,
+            # },
+            # "registers": {
+            #     "page": "api/registers",
+            #     "process_method": self.process_registers,
             # },
         }
 
@@ -121,11 +136,17 @@ class MyDeviceHTTP(HTTP):
                         out_dir=dev.get_sub_dir("http_json_data"),
                     )
 
+                self.log.debug(f"Processing parsed {label} data into the data model...")
                 method["process_method"](dev, parsed_data)
                 at_least_one_success = True
             except Exception as err:
                 self.log.exception(f"'{label}' method failed: {err}")
                 failed_methods.append(label)
+
+        self.log.info(
+            f"Finished getting and processing data from {dev.ip} "
+            f"using {len(self.methods)} methods"
+        )
 
         if failed_methods:
             self.log.warning(
@@ -139,41 +160,130 @@ class MyDeviceHTTP(HTTP):
     # Response processing
     #
     # Each method below processes a JSON response from a specific
-    # endpoint and populates the DeviceData model.
+    # endpoint and populates the DeviceData model. These demonstrate
+    # how to map API responses to the PEAT data model fields.
     # ------------------------------------------------------------------
 
     @staticmethod
     def process_device_info(dev: DeviceData, data: dict) -> None:
         """Process device information response.
 
-        TODO: Map response fields to the DeviceData model.
-        Example response:
-            {"hostname": "mydevice", "model": "X100", "firmware": "1.2.3"}
+        Example response::
+
+            {
+                "hostname": "plc-west-01",
+                "model": "X100",
+                "serialNumber": "SN-2024-001",
+                "firmwareVersion": "3.2.1",
+                "hardwareRevision": "B",
+                "osName": "VxWorks",
+                "osVersion": "7.0",
+                "uptimeSeconds": 86400,
+                "timezone": "America/Denver"
+            }
         """
-        # dev.name = data.get("hostname", "")
-        # dev.description.model = data.get("model", "")
-        # dev.firmware.version = data.get("firmware", "")
-        # dev.serial_number = data.get("serial", "")
-        pass
+        # Basic identity
+        dev.name = data.get("hostname", "")
+        dev.hostname = data.get("hostname", "")
+        dev.serial_number = data.get("serialNumber", "")
+
+        # Description (what the device is)
+        dev.description.model = data.get("model", "")
+
+        # Firmware
+        dev.firmware.version = data.get("firmwareVersion", "")
+
+        # Hardware
+        dev.hardware.revision = data.get("hardwareRevision", "")
+        if data.get("totalMemory"):
+            dev.hardware.memory_total = int(data["totalMemory"])
+
+        # Operating system
+        dev.os.name = data.get("osName", "")
+        dev.os.version = data.get("osVersion", "")
+        dev.os.kernel = data.get("kernelVersion", "")
+
+        # Timing
+        if data.get("uptimeSeconds"):
+            dev.uptime = int(data["uptimeSeconds"])
+
+        # Geolocation
+        dev.geo.timezone = data.get("timezone", "")
+
+        # Anything that doesn't fit the standard model goes in extra
+        for key in ["customField1", "customField2"]:
+            if data.get(key):
+                dev.extra[key] = data[key]
 
     @staticmethod
     def process_network_config(dev: DeviceData, data: dict) -> None:
         """Process network configuration response.
 
-        TODO: Map response fields to Interface and Service objects.
-        Example response:
-            {"interfaces": [{"name": "eth0", "ip": "192.168.1.1", "mask": "255.255.255.0"}]}
+        Delegates to the shared parse_interfaces function to
+        populate Interface objects in the data model.
+
+        Example response::
+
+            {
+                "interfaces": [
+                    {
+                        "name": "eth0",
+                        "type": "ethernet",
+                        "ip": "192.168.1.100",
+                        "subnetMask": "255.255.255.0",
+                        "gateway": "192.168.1.1",
+                        "mac": "00:1A:2B:3C:4D:5E",
+                        "enabled": true,
+                        "connected": true,
+                        "speed": 100000000
+                    }
+                ]
+            }
         """
-        # for iface_data in data.get("interfaces", []):
-        #     iface = Interface(
-        #         name=iface_data.get("name", ""),
-        #         type="ethernet",
-        #         ip=iface_data.get("ip", ""),
-        #         subnet_mask=iface_data.get("mask", ""),
-        #         gateway=iface_data.get("gateway", ""),
-        #     )
-        #     dev.store("interface", iface, lookup=["name", "ip"])
-        pass
+        parse_interfaces(dev, data.get("interfaces", []))
+
+    @staticmethod
+    def process_services(dev: DeviceData, data: dict) -> None:
+        """Process running services response.
+
+        Delegates to the shared parse_services function.
+
+        Example response::
+
+            {
+                "services": [
+                    {
+                        "protocol": "modbus_tcp",
+                        "port": 502,
+                        "transport": "tcp",
+                        "enabled": true,
+                        "protocolId": "1"
+                    }
+                ]
+            }
+        """
+        parse_services(dev, data.get("services", []))
+
+    @staticmethod
+    def process_users(dev: DeviceData, data: dict) -> None:
+        """Process user accounts response.
+
+        Delegates to the shared parse_users function.
+
+        Example response::
+
+            {
+                "users": [
+                    {
+                        "username": "admin",
+                        "fullName": "Administrator",
+                        "roles": ["admin"],
+                        "permissions": ["read", "write", "execute"]
+                    }
+                ]
+            }
+        """
+        parse_users(dev, data.get("users", []))
 
 
 __all__ = ["MyDeviceHTTP"]

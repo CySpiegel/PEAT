@@ -12,8 +12,6 @@ Authors
 
 import serial  # PySerial
 
-from peat import DeviceData, log
-
 from .mydevice_commands import MyDeviceCommands
 
 

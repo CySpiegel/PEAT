@@ -179,6 +179,7 @@ class MyDeviceCommands(ABC):
         Returns:
             True if at least one operation was successful.
         """
+        self.log.info(f"Starting CLI pull and process for {self.ip}")
         success = False
 
         # TODO: Implement the CLI pull workflow for your device.
@@ -189,18 +190,27 @@ class MyDeviceCommands(ABC):
         #     dev.write_file(config_output, "running_config.txt")
         #     parse_config(dev, config_output)  # from mydevice_parse
         #     success = True
+        # else:
+        #     self.log.warning(f"Failed to get config from {self.ip}")
         #
         # version_output = self.get_version()
         # if version_output:
         #     dev.write_file(version_output, "version.txt")
         #     parse_firmware_info(dev, version_output)
         #     success = True
+        # else:
+        #     self.log.warning(f"Failed to get version from {self.ip}")
         #
         # iface_output = self.get_interfaces()
         # if iface_output:
         #     dev.write_file(iface_output, "interfaces.txt")
         #     parse_interfaces(dev, iface_output)
         #     success = True
+        # else:
+        #     self.log.warning(f"Failed to get interfaces from {self.ip}")
+
+        if not success:
+            self.log.warning(f"CLI pull and process failed for {self.ip}")
 
         return success
 

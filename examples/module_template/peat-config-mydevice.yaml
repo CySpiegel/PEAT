@@ -1,0 +1,226 @@
+# Example PEAT configuration for the MyDevice module template.
+#
+# This config demonstrates how to set up PEAT for scanning, pulling,
+# and parsing data from MyDevice devices. It covers:
+#   - Global protocol settings (HTTP, SSH, Telnet, Serial)
+#   - Module-specific options (pull methods, custom settings)
+#   - Per-host overrides (credentials, ports, forced module)
+#
+# Usage:
+#   peat scan -c peat-config-mydevice.yaml -i 192.168.1.0/24
+#   peat pull -c peat-config-mydevice.yaml -i 192.168.1.100
+#   peat parse -d MyDevice -- device_config.json
+#
+# For external modules not installed in peat/modules/:
+#   peat scan -c peat-config-mydevice.yaml -I path/to/mydevice.py -i 192.168.1.0/24
+#
+# Refer to the full configuration reference:
+#   https://sandialabs.github.io/PEAT/configure.html
+#
+# -----------------------------------------------------------------------------
+
+metadata:
+  name: "mydevice-example"
+  description: "Example configuration for the MyDevice module template"
+  author: ""
+  created: ""
+  updated: ""
+
+# -----------------------------------------------------------------------------
+# General options
+# -----------------------------------------------------------------------------
+
+# Path(s) to external module files or directories to import.
+# Not needed if the module is installed in peat/modules/.
+additional_modules:
+  - "examples/module_template/"
+
+# Terminal output verbosity
+verbose: false
+quiet: false
+
+# Default timeout for all socket connections (seconds)
+default_timeout: 5.0
+
+# Maximum concurrent threads for scanning
+max_threads: 260
+
+# -----------------------------------------------------------------------------
+# Output directories
+# -----------------------------------------------------------------------------
+
+out_dir: &OUTDIR "./peat_results/"
+run_dir: &RUNDIR !JOIN [*OUTDIR, "default_run_dir/"]
+device_dir: !JOIN [*RUNDIR, "devices/"]
+summaries_dir: !JOIN [*RUNDIR, "summaries/"]
+log_dir: !JOIN [*RUNDIR, "logs/"]
+temp_dir: !JOIN [*RUNDIR, "temp/"]
+
+# -----------------------------------------------------------------------------
+# Elasticsearch / OpenSearch (optional)
+# -----------------------------------------------------------------------------
+
+# Set to your Elasticsearch URL to enable exporting, or null to disable.
+# Example: "http://localhost:9200/"
+elastic_server: null
+
+# -----------------------------------------------------------------------------
+# Device options
+#
+# These apply globally to all hosts. Per-host overrides can be
+# configured in the "hosts" section below.
+# -----------------------------------------------------------------------------
+
+device_options:
+
+  # Default timeout for all protocols (can be overridden per-protocol below)
+  timeout: 5.0
+
+  # --------------------------------------------------------------------------
+  # MyDevice module-specific options
+  #
+  # These correspond to MyDevice.default_options["mydevice"] in the module.
+  # Access at runtime via: dev.options["mydevice"]["pull_methods"]
+  # --------------------------------------------------------------------------
+
+  mydevice:
+    # Which protocols to use when pulling data from the device.
+    # Available: http, ssh, telnet, serial
+    pull_methods:
+      - http
+      - ssh
+
+  # --------------------------------------------------------------------------
+  # Protocol configurations
+  #
+  # PEAT provides global defaults for all protocols in
+  # peat/data/default_options.py (port, timeout, etc.). You only need to
+  # set values here that you want to OVERRIDE or ADD for your deployment.
+  #
+  # Module code accesses these via dev.options["http"]["port"], etc.
+  # Per-host overrides in the "hosts" section below take highest priority.
+  # --------------------------------------------------------------------------
+
+  # HTTP -- used for web API access and device identification
+  # Global defaults already provide: port=80, timeout=5.0
+  # The module adds: user, pass (via default_options)
+  http:
+    user: "admin"
+    pass: "password"
+
+  # SSH -- used for CLI commands and SFTP file transfer
+  # Global defaults already provide: port=22, timeout=5.0,
+  #   user="", pass="", key_filename="", passphrase="", look_for_keys=false
+  ssh:
+    user: "admin"
+    pass: "password"
+
+  # Telnet -- used for CLI commands on devices without SSH
+  # Global defaults already provide: port=23, timeout=5.0
+  # The module adds: user, pass (via default_options)
+  telnet:
+    user: "admin"
+    pass: "password"
+
+  # Serial -- used for RS-232 console connections
+  # Global defaults already provide: baudrate=0, timeout=5.0
+  # Uncomment to override the default baudrate:
+  # serial:
+  #   baudrate: 9600
+
+# -----------------------------------------------------------------------------
+# Per-host configuration
+#
+# Override global options for specific devices. Useful when devices
+# have different credentials, non-standard ports, or need to be
+# forced to a specific module.
+#
+# Options set here override the corresponding values in device_options.
+# -----------------------------------------------------------------------------
+
+hosts:
+  # ------ Example: device with default settings ------
+  - label: "mydevice-01"
+    comment: "Primary controller - west substation"
+    identifiers:
+      ip: "192.168.1.100"
+
+  # ------ Example: device with custom credentials ------
+  - label: "mydevice-02"
+    comment: "Backup controller - east substation"
+    identifiers:
+      ip: "192.168.1.101"
+    options:
+      http:
+        user: "operator"
+        pass: "custom_password"
+      ssh:
+        user: "operator"
+        pass: "custom_password"
+
+  # ------ Example: device on non-standard ports ------
+  - label: "mydevice-03"
+    comment: "Lab device with non-standard ports"
+    identifiers:
+      ip: "10.0.0.50"
+    options:
+      http:
+        port: 8080
+      ssh:
+        port: 2222
+        timeout: 10.0
+
+  # ------ Example: force module and limit pull methods ------
+  - label: "mydevice-04"
+    comment: "Device that only supports Telnet (no SSH or HTTP)"
+    identifiers:
+      ip: "192.168.1.200"
+    # Force PEAT to use this module instead of auto-detecting
+    peat_module: "MyDevice"
+    options:
+      mydevice:
+        pull_methods:
+          - telnet
+      telnet:
+        user: "root"
+        pass: "device_password"
+
+  # ------ Example: serial connection ------
+  - label: "mydevice-serial"
+    comment: "Device connected via RS-232 serial cable"
+    identifiers:
+      serial_port: "/dev/ttyUSB0"
+    peat_module: "MyDevice"
+    options:
+      mydevice:
+        pull_methods:
+          - serial
+      serial:
+        baudrate: 9600
+        timeout: 10.0
+
+  # ------ Example: SSH key authentication ------
+  - label: "mydevice-keyauth"
+    comment: "Device using SSH key-based authentication"
+    identifiers:
+      ip: "192.168.1.150"
+    options:
+      mydevice:
+        pull_methods:
+          - ssh
+      ssh:
+        user: "admin"
+        pass: ""
+        key_filename: "/home/user/.ssh/mydevice_key"
+        passphrase: ""
+
+  # ------ Example: known device metadata ------
+  # Pre-populating identifiers helps PEAT match devices faster
+  # and provides fallback data if the device doesn't respond.
+  - label: "mydevice-known"
+    comment: "Device with known MAC and hostname from network inventory"
+    identifiers:
+      ip: "192.168.1.175"
+      mac: "00:1A:2B:3C:4D:5E"
+      name: "plc-west-01"
+      hostname: "plc-west-01.example.com"
