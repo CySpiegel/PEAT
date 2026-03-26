@@ -18,6 +18,7 @@ Documentation of PEAT's Python codebase and APIs.
    general_apis
    heat_api
    python_examples
+   testing_guide
    elastic_implementation
    database_schema
    dependencies
